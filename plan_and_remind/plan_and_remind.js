@@ -387,10 +387,11 @@
     // Delete the intermediate draft that was created for editing a queued item.
     function cleanReplacedDraft() {
         if (!rcmail.env.pnr_replaced) { return; }
-        var draftUid = rcmail.env.draft_id || rcmail.env._draft_id || '';
+        // Try multiple sources for the draft UID.
+        var draftUid = rcmail.env.pnr_draft_uid || rcmail.env.draft_id || rcmail.env._draft_id || rcmail.env.uid || '';
         // Fallback: try to get it from the URL parameter.
         if (!draftUid) {
-            var m = window.location.search.match(/[?&]_draft_id=(\d+)/);
+            var m = window.location.search.match(/[?&]_(?:draft_id|uid)=(\d+)/);
             if (m) { draftUid = m[1]; }
         }
         var mbox = rcmail.env.mailbox || rcmail.env.cur_folder || rcmail.env.drafts_mbox || '';

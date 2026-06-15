@@ -60,6 +60,15 @@ class plan_and_remind extends rcube_plugin
             $pnrReplaced = rcube_utils::get_input_value('_pnr_replaced', rcube_utils::INPUT_GET);
             if ($pnrReplaced) {
                 $this->rc->output->set_env('pnr_replaced', (int) $pnrReplaced);
+                // Also expose the draft UID/ID so JS can clean up later.
+                $draftUid = rcube_utils::get_input_value('_uid', rcube_utils::INPUT_GET);
+                if ($draftUid) {
+                    $this->rc->output->set_env('pnr_draft_uid', (int) $draftUid);
+                }
+                $draftId = rcube_utils::get_input_value('_draft_id', rcube_utils::INPUT_GET);
+                if ($draftId) {
+                    $this->rc->output->set_env('pnr_draft_uid', (int) $draftId);
+                }
             }
 
             $this->init_mail();
@@ -183,16 +192,31 @@ class plan_and_remind extends rcube_plugin
                 throw new Exception('IMAP save_message returned false for folder: ' . $folder);
             }
 
-            $uid = $imap->id2uid($saved, $folder);
-            if (!$uid) {
-                $uid = $saved;
+            // rcube_imap::save_message() returns the UID of the saved message.
+            // In some edge cases or older PHP versions it may return 0 —
+            // resolve via id2uid using a SEARCH for the highest UID.
+            $uid = (int) $saved;
+            if ($uid <= 0) {
+                // Fallback: search for the last message in the folder.
+                $imap->set_folder($folder);
+                $all = $imap->search_once($folder, 'ALL', true);
+                $uid = (int) $imap->id2uid($all->count(), $folder);
             }
+
+            rcube::write_log('plan_and_remind', sprintf(
+                'edit: saved queued item #%d to Drafts as UID %d in folder "%s" (save returned %s)',
+                $id, $uid, $folder, var_export($saved, true)
+            ));
 
             // Mark the old task as cancelled (it has been promoted to a draft).
             $this->storage()->cancel($id, $this->rc->user->ID);
 
             // Tell the browser to open the draft in compose mode.
-            $url = './?_task=mail&_action=compose&_draft_id=' . $uid
+            // Roundcube uses _uid (not _draft_id) with _mbox to open a
+            // message for editing. This is the same mechanism Roundcube
+            // uses when you click on a draft in the Drafts folder.
+            $url = './?_task=mail&_action=compose'
+                 . '&_uid=' . $uid
                  . '&_mbox=' . urlencode($folder)
                  . '&_pnr_replaced=' . $id;
 
@@ -771,26 +795,36 @@ class plan_and_remind extends rcube_plugin
         $orig_subject    = $this->decode_header_text($headers->subject);
         $orig_from       = $this->decode_header_text($headers->from);
         $orig_date       = $headers->date ? $this->rc->format_date($headers->date) : '';
-        $orig_message_id = isset($headers->messageID) ? trim($headers->messageID) : '';
-        if ($orig_message_id === '' && isset($headers['message-id'])) {
-            $orig_message_id = trim($headers['message-id']);
+
+        // Resolve Message-ID from the rcube_message_header object (NOT array access).
+        $orig_message_id = '';
+        if (isset($headers->messageID)) {
+            $orig_message_id = trim($headers->messageID);
+        }
+        if ($orig_message_id === '' && method_exists($headers, 'get')) {
+            $mid = $headers->get('message-id');
+            if ($mid) {
+                $orig_message_id = trim($mid);
+            }
+        }
+
+        // Resolve References from the rcube_message_header object.
+        $ref_raw = '';
+        if (isset($headers->references)) {
+            $ref_raw = trim($headers->references);
+        }
+        if ($ref_raw === '' && method_exists($headers, 'get')) {
+            $rv = $headers->get('references');
+            if ($rv) {
+                $ref_raw = trim($rv);
+            }
         }
 
         // Build References chain: existing references from the original +
         // the original's own Message-ID, so this reminder threads under it.
         $references = [];
-        if (isset($headers->references) && $headers->references) {
-            $refs = trim($headers->references);
-            if ($refs !== '') {
-                foreach (preg_split('/\\s+/', $refs) as $ref) {
-                    $ref = trim($ref);
-                    if ($ref !== '' && !in_array($ref, $references)) {
-                        $references[] = $ref;
-                    }
-                }
-            }
-        } elseif (isset($headers['references']) && $headers['references']) {
-            foreach (preg_split('/\\s+/', trim($headers['references'])) as $ref) {
+        if ($ref_raw !== '') {
+            foreach (preg_split('/\\s+/', $ref_raw) as $ref) {
                 $ref = trim($ref);
                 if ($ref !== '' && !in_array($ref, $references)) {
                     $references[] = $ref;
@@ -874,8 +908,23 @@ class plan_and_remind extends rcube_plugin
         ];
 
         $mbody  = $mime->get($params);
-        $mhead  = $mime->txtHeaders(null, true);
+
+        // IMPORTANT: pass the explicit headers array (not null) to txtHeaders,
+        // because some PEAR Mail_mime versions do not include custom headers
+        // like In-Reply-To/References when called with null.
+        $hdrs   = $mime->headers();
+        $mhead  = $mime->txtHeaders($hdrs, true);
         $source = $mhead . "\r\n" . $mbody;
+
+        // Debug: verify that threading headers are present in the final source.
+        $logIrt = '';
+        $logRef = '';
+        if (preg_match('/^In-Reply-To:\\s*(.+)$/mi', $source, $m)) { $logIrt = trim($m[1]); }
+        if (preg_match('/^References:\\s*(.+)$/mi', $source, $m)) { $logRef = trim($m[1]); }
+        rcube::write_log('plan_and_remind', sprintf(
+            'reminder built: orig_msgid=[%s] in_reply_to=[%s] references=[%s]',
+            $orig_message_id, $logIrt, $logRef
+        ));
 
         return [$source, $subject];
     }

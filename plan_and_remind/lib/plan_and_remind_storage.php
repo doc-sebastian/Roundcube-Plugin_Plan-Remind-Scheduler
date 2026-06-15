@@ -26,6 +26,19 @@ class plan_and_remind_storage
     {
         $this->db    = $db;
         $this->table = $db->table_name($table);
+
+        // Ensure the connection can store 4-byte UTF-8 (emoji etc.).
+        // Even with a utf8mb4 table, a legacy "utf8" (3-byte) connection
+        // charset will reject those characters.
+        $dbtype = method_exists($db, 'db_provider') ? $db->db_provider() : '';
+        if ($dbtype === 'mysql' || $dbtype === 'mysqli') {
+            try {
+                @$db->query("SET NAMES utf8mb4");
+            } catch (Throwable $e) {
+                // Non-critical; if the server doesn't support utf8mb4 the
+                // fallback sanitisation in add() will handle it.
+            }
+        }
     }
 
     public function get_last_error()
@@ -86,9 +99,29 @@ class plan_and_remind_storage
         // driver versions (query() may return a handle even on failure).
         $err = $this->db->is_error();
         if ($err) {
-            $this->last_error = (is_string($err) ? $err : 'database error') . ' [table: ' . $this->table . ']';
-            rcube::write_log('plan_and_remind', 'insert failed: ' . $this->last_error);
-            return false;
+            // Check if the error is an "incorrect string value" / charset issue.
+            // This happens with 4-byte UTF-8 (emoji etc.) when the connection
+            // charset is the legacy 3-byte "utf8" and couldn't be upgraded.
+            $errStr = is_string($err) ? $err : 'database error';
+            if (stripos($errStr, 'Incorrect string value') !== false
+                || stripos($errStr, 'invalid byte sequence') !== false
+                || stripos($errStr, 'charset') !== false
+            ) {
+                // Retry: sanitize all text fields to strip 4-byte characters.
+                $values_sanitized = $this->sanitize_values($values);
+
+                // Only retry if something actually changed.
+                if ($values_sanitized !== $values) {
+                    $this->db->query($sql, $values_sanitized);
+                    $err = $this->db->is_error();
+                }
+            }
+
+            if ($err) {
+                $this->last_error = (is_string($err) ? $err : 'database error') . ' [table: ' . $this->table . ']';
+                rcube::write_log('plan_and_remind', 'insert failed: ' . $this->last_error);
+                return false;
+            }
         }
 
         // Catch the silent case where the statement "ran" but no row was added.
@@ -276,5 +309,25 @@ class plan_and_remind_storage
             . ' WHERE status IN (?, ?) AND sent_copy_pending = 0 AND created_at < ?',
             'sent', 'cancelled', $cutoff
         );
+    }
+
+    /**
+     * Strip 4-byte UTF-8 characters (emoji, supplementary planes) from all
+     * string values in a data array. Used as a fallback when the DB connection
+     * doesn't support utf8mb4.
+     *
+     * @param array $values indexed array of values (matching $cols order)
+     * @return array sanitized values
+     */
+    private function sanitize_values(array $values)
+    {
+        foreach ($values as $i => $val) {
+            if (is_string($val)) {
+                // Remove any character outside the BMP (code points U+10000
+                // and above), i.e. 4-byte UTF-8 sequences.
+                $values[$i] = preg_replace('/[\x{10000}-\x{10FFFF}]/u', "\xEF\xBF\xBD", $val);
+            }
+        }
+        return $values;
     }
 }
