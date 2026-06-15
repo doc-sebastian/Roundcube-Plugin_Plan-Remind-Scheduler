@@ -1,0 +1,233 @@
+/**
+ * Plan & Remind – Larry skin
+ *
+ * The stopwatch is drawn with a CSS mask tinted to the surrounding text
+ * colour (currentColor). That way it is always visible on both light and
+ * dark surfaces and never shows an opaque (black) background box.
+ */
+
+:root {
+    --pnr-stopwatch: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KICA8ZyBmaWxsPSIjZmZmZmZmIj4KICAgIDxwYXRoIGQ9Ik0xMiA0IEM3LjAzIDQgMyA4LjAzIDMgMTMgQzMgMTcuOTcgNy4wMyAyMiAxMiAyMiBDMTYuOTcgMjIgMjEgMTcuOTcgMjEgMTMgQzIxIDguMDMgMTYuOTcgNCAxMiA0IFogTTEyIDYgQzE1Ljg3IDYgMTkgOS4xMyAxOSAxMyBDMTkgMTYuODcgMTUuODcgMjAgMTIgMjAgQzguMTMgMjAgNSAxNi44NyA1IDEzIEM1IDkuMTMgOC4xMyA2IDEyIDYgWiIvPgogICAgPHBhdGggZD0iTTEyIDEzIEwxMiA3LjUgQSA1LjUgNS41IDAgMSAwIDE3LjUgMTMgWiIvPgogICAgPHBhdGggZD0iTTkgMSBIMTUgVjMgSDEzLjUgVjQuNSBIMTAuNSBWMyBIOSBaIi8+CiAgICA8cGF0aCBkPSJNNC41IDcuNSBMNy41IDQuNSBMOS41IDYuNSBMNi41IDkuNSBaIi8+CiAgPC9nPgo8L3N2Zz4K");
+}
+
+/* ---- Compose toolbar: "Planen" button -------------------------------- */
+.pnr-scheduledsend {
+    position: relative;
+    background-image: none !important;  /* kill the opaque raster icon */
+    background-color: transparent !important;
+}
+
+/* Pressed / active state: the user has opened the schedule dialog. */
+.pnr-scheduledsend.pnr-pressed {
+    background-color: #444444 !important;
+}
+/* Position the icon at the top-centre of the button, matching Larry's other
+ * toolbar icons, so it lines up with its neighbours instead of sitting low. */
+.pnr-scheduledsend::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 4px;
+    width: 22px;
+    height: 22px;
+    margin-left: -11px;
+    background-color: currentColor;
+    -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain;
+            mask: var(--pnr-stopwatch) no-repeat center / contain;
+}
+
+/* ---- Reminder entry in pop-up / right-click menus -------------------- */
+.popupmenu a.pnr-reminder,
+#messagecontextmenu a.pnr-reminder,
+.listmenu a.pnr-reminder,
+.messagemenu a.pnr-reminder,
+ul.toolbarmenu li a.pnr-reminder {
+    position: relative;
+    background-image: none !important;
+    color: #fff;
+    margin-left:0px;
+}
+
+.popupmenu a.pnr-reminder {
+    position: relative;
+    background-image: none !important;
+    color: #fff;
+    padding-left: 30px;
+	display: block;
+    unicode-bidi: isolate;
+	color: #fff;
+    white-space: nowrap;
+    min-width: 130px;
+    margin: 0;
+    border-top: 1px solid #5a5a5a;
+    text-decoration: none;
+    min-height: 14px;
+}
+	
+	
+.popupmenu a.pnr-reminder::before,
+#messagecontextmenu a.pnr-reminder::before,
+.listmenu a.pnr-reminder::before,
+.messagemenu a.pnr-reminder::before,
+ul.toolbarmenu li a.pnr-reminder::before {
+    content: "";
+    position: absolute;
+    left: 7px;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    margin-top: -9px;
+    background-color: currentColor;
+    color: #fff;
+    -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain;
+            mask: var(--pnr-stopwatch) no-repeat center / contain;
+}
+
+/* ---- Settings section module icon ------------------------------------ */
+#settings-sections .listing li.plan_and_remind a,
+.listing li.plan_and_remind a,
+#sections-table .plan_and_remind a {
+    position: relative;
+    padding-left: 38px;
+    background-image: none !important;
+}
+#settings-sections .listing li.plan_and_remind a::before,
+.listing li.plan_and_remind a::before,
+#sections-table .plan_and_remind a::before {
+    content: "";
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    width: 20px;
+    height: 20px;
+    margin-top: -10px;
+    background-color: currentColor;
+    -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain;
+            mask: var(--pnr-stopwatch) no-repeat center / contain;
+}
+
+/* Larry renders the settings sections as a table; target the row directly.
+ * scheduler.svg is transparent (no black box) and visible on the light list. */
+#settings-sections li.plan_and_remind a,
+#rcmrowplan_and_remind a {
+    background-image: url("scheduler.svg");
+    background-repeat: no-repeat;
+    background-position: 5px center;
+    background-size: 22px 22px;
+    padding-left: 32px;
+}
+#sections-table tbody #rcmrowplan_and_remind td.section {
+    background-image: url("scheduler.svg");
+    background-repeat: no-repeat;
+    background-position: 6px center;
+    background-size: 22px 22px;
+}
+
+/* ---- Scheduling / reminder dialog ----------------------------------- */
+.pnr-dt-dialog .pnr-field {
+    margin-bottom: 14px;
+}
+.pnr-dt-dialog .pnr-field > label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+.pnr-dt-dialog input[type="datetime-local"],
+.pnr-dt-dialog input[type="text"],
+.pnr-dt-dialog textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 7px;
+}
+.pnr-dt-dialog .pnr-check label {
+    font-weight: normal;
+}
+.pnr-dt-dialog .pnr-hint {
+    font-size: 11px;
+    color: #888;
+    margin-top: 3px;
+}
+.pnr-presets {
+    margin: 8px 0 14px;
+}
+.pnr-presets .pnr-preset {
+    display: inline-block;
+    font-size: 11px;
+    padding: 3px 9px;
+    margin: 0 5px 5px 0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #f4f4f4;
+    text-decoration: none;
+    color: #333;
+    cursor: pointer;
+}
+.pnr-presets .pnr-preset:hover {
+    background: #e8e8e8;
+}
+
+/* ---- Undo-send toast ------------------------------------------------- */
+.pnr-undo-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    z-index: 30000;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #2b2b2b;
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 6px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+    font-size: 13px;
+}
+.pnr-undo-toast .pnr-undo-btn {
+    color: #fff;
+    font-weight: bold;
+    text-decoration: none;
+}
+.pnr-undo-toast .pnr-undo-btn:hover {
+    text-decoration: underline;
+}
+.pnr-undo-ring {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: pnr-spin 1s linear infinite;
+}
+@keyframes pnr-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ---- Settings queue table ------------------------------------------- */
+table.pnr-queue {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+}
+table.pnr-queue th,
+table.pnr-queue td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid #e6e6e6;
+    vertical-align: top;
+}
+table.pnr-queue td.pnr-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+table.pnr-queue td.pnr-actions a.pnr-edit {
+    margin-right: 6px;
+    color: #00aad2;
+}
+table.pnr-queue td.pnr-actions a.pnr-edit:hover {
+    text-decoration: underline;
+}
+.pnr-empty {
+    padding: 10px 2px;
+    color: #888;
+}

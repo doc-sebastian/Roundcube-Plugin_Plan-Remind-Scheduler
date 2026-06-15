@@ -1,0 +1,19 @@
+{
+    "name": "plan-and-remind/plan_and_remind",
+    "type": "roundcube-plugin",
+    "description": "Schedule outgoing mail, undo-send safety delay and e-mail reminders (Wiedervorlage) for Roundcube.",
+    "license": "MIT",
+    "version": "1.0.0",
+    "authors": [
+        {
+            "name": "Sebastian Fischer",
+            "email": "post@scriptometer.de",
+            "role": "Developer"
+        }
+    ],
+    "keywords": ["roundcube", "plugin", "email", "schedule", "send later", "undo send", "reminder", "wiedervorlage"],
+    "require": {
+        "php": ">=7.4",
+        "roundcube/plugin-installer": ">=0.3.5"
+    }
+}

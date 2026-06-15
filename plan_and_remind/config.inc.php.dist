@@ -1,0 +1,66 @@
+<?php
+
+/**
+ * Plan & Remind – configuration.
+ *
+ * Copy this file to config.inc.php and adjust to taste.
+ */
+
+$config = [];
+
+/* ----------------------------------------------------------------------- *
+ * Undo Send (client-side safety countdown)                                *
+ * ----------------------------------------------------------------------- */
+
+// Show a countdown before a normal message actually leaves the composer,
+// giving the user a chance to cancel. Users can override this in Settings.
+$config['plan_and_remind_undo_enabled'] = true;
+
+// Default countdown length in seconds (1–120). Users can override it.
+$config['plan_and_remind_default_delay'] = 10;
+
+/* ----------------------------------------------------------------------- *
+ * Reminders (Wiedervorlage)                                               *
+ * ----------------------------------------------------------------------- */
+
+// Pre-fill the reminder recipient with the user's own address by default.
+$config['plan_and_remind_reminder_default_self'] = true;
+
+/* ----------------------------------------------------------------------- *
+ * Scheduled delivery / cron                                               *
+ * ----------------------------------------------------------------------- */
+
+// Maximum number of delivery attempts before an item is marked "failed".
+$config['plan_and_remind_max_attempts'] = 5;
+
+// Remove sent/cancelled rows older than this many days (housekeeping).
+$config['plan_and_remind_purge_days'] = 30;
+
+// Write a copy of delivered *scheduled* messages to the user's Sent folder.
+// The copy is created the next time that user logs in (cron has no IMAP
+// session). Reminders are never copied to Sent.
+$config['plan_and_remind_save_to_sent'] = true;
+
+/* ----------------------------------------------------------------------- *
+ * SMTP authentication for the cron worker                                 *
+ * ----------------------------------------------------------------------- *
+ *
+ * When the cron job runs there is no logged-in user, so the user's normal
+ * SMTP credentials are not available. Choose ONE of the two strategies.
+ *
+ * STRATEGY A (default): store each user's SMTP credentials, encrypted with
+ * Roundcube's des_key, alongside the queued message. They are deleted as
+ * soon as the message is delivered. Simple, no extra server setup.
+ * Downside: the (encrypted) password lives in the DB until delivery, and a
+ * password change before delivery makes the queued item fail.
+ */
+$config['plan_and_remind_store_credentials'] = true;
+
+/*
+ * STRATEGY B: set the option above to false and provide a dedicated relay /
+ * submission account that the cron uses for everyone. Leave host empty to
+ * fall back to the main `smtp_host` (useful with a no-auth localhost relay).
+ */
+$config['plan_and_remind_smtp_host'] = null;   // e.g. 'tls://mail.example.com:587' or 'localhost:25'
+$config['plan_and_remind_smtp_user'] = null;
+$config['plan_and_remind_smtp_pass'] = null;

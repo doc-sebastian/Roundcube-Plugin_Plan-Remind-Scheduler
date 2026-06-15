@@ -1,0 +1,160 @@
+/**
+ * Plan & Remind – Elastic skin
+ *
+ * The stopwatch is drawn with a CSS mask tinted to currentColor so it adapts
+ * to Elastic's light and dark modes and never shows an opaque background.
+ */
+
+:root {
+    --pnr-stopwatch: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KICA8ZyBmaWxsPSIjZmZmZmZmIj4KICAgIDxwYXRoIGQ9Ik0xMiA0IEM3LjAzIDQgMyA4LjAzIDMgMTMgQzMgMTcuOTcgNy4wMyAyMiAxMiAyMiBDMTYuOTcgMjIgMjEgMTcuOTcgMjEgMTMgQzIxIDguMDMgMTYuOTcgNCAxMiA0IFogTTEyIDYgQzE1Ljg3IDYgMTkgOS4xMyAxOSAxMyBDMTkgMTYuODcgMTUuODcgMjAgMTIgMjAgQzguMTMgMjAgNSAxNi44NyA1IDEzIEM1IDkuMTMgOC4xMyA2IDEyIDYgWiIvPgogICAgPHBhdGggZD0iTTEyIDEzIEwxMiA3LjUgQSA1LjUgNS41IDAgMSAwIDE3LjUgMTMgWiIvPgogICAgPHBhdGggZD0iTTkgMSBIMTUgVjMgSDEzLjUgVjQuNSBIMTAuNSBWMyBIOSBaIi8+CiAgICA8cGF0aCBkPSJNNC41IDcuNSBMNy41IDQuNSBMOS41IDYuNSBMNi41IDkuNSBaIi8+CiAgPC9nPgo8L3N2Zz4K");
+}
+
+/* ---- Stopwatch icon, shared by every placement ---------------------- */
+a.pnr-scheduledsend.button::before,
+a.pnr-reminder::before,
+.toolbarmenu a.pnr-reminder::before,
+.listing li.plan_and_remind > a::before,
+.sections-list li.plan_and_remind > a::before,
+#settings-menu .plan_and_remind a::before {
+    content: '' !important;
+    display: inline-block;
+    vertical-align: middle;
+    background-image: none !important;
+    background-color: currentColor !important;
+    -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain !important;
+            mask: var(--pnr-stopwatch) no-repeat center / contain !important;
+    opacity: 1;
+}
+
+/* Compose toolbar "Geplantes Senden" button */
+a.pnr-scheduledsend.button::before {
+    width: 1.25em;
+    height: 1.25em;
+}
+
+/* Reminder entry in the options / context menu */
+.toolbarmenu a.pnr-reminder::before,
+a.pnr-reminder::before {
+    width: 1.1em;
+    height: 1.1em;
+    margin-right: 0.4em;
+    vertical-align: -0.2em;
+}
+
+/* Settings section icon */
+.listing li.plan_and_remind > a::before,
+.sections-list li.plan_and_remind > a::before,
+#settings-menu .plan_and_remind a::before {
+    width: 1.25em;
+    height: 1.25em;
+    margin-right: 0.5em;
+}
+
+/* ---- Scheduling / reminder dialog ----------------------------------- */
+.pnr-dt-dialog .pnr-field {
+    margin-bottom: 14px;
+}
+.pnr-dt-dialog .pnr-field > label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+.pnr-dt-dialog input[type="datetime-local"],
+.pnr-dt-dialog input[type="text"],
+.pnr-dt-dialog textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+}
+.pnr-dt-dialog .pnr-check label {
+    font-weight: normal;
+}
+.pnr-dt-dialog .pnr-hint {
+    font-size: 0.85em;
+    opacity: 0.7;
+    margin-top: 3px;
+}
+.pnr-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0 14px;
+}
+.pnr-presets .pnr-preset {
+    font-size: 0.85em;
+    padding: 3px 10px;
+    border: 1px solid var(--color-border, #ccc);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
+}
+.pnr-presets .pnr-preset:hover {
+    background: var(--color-list-selected-background, #f0f0f0);
+}
+
+/* ---- Undo-send toast ------------------------------------------------- */
+.pnr-undo-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    z-index: 30000;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #2b2b2b;
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 8px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+    font-size: 14px;
+}
+.pnr-undo-toast .pnr-undo-btn {
+    color: #7ec8ff;
+    font-weight: bold;
+    text-decoration: none;
+}
+.pnr-undo-toast .pnr-undo-btn:hover {
+    text-decoration: underline;
+}
+.pnr-undo-ring {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: pnr-spin 1s linear infinite;
+}
+@keyframes pnr-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ---- Settings queue table ------------------------------------------- */
+table.pnr-queue {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+}
+table.pnr-queue th,
+table.pnr-queue td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--color-border, #e6e6e6);
+    vertical-align: top;
+}
+table.pnr-queue td.pnr-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+table.pnr-queue td.pnr-actions a.pnr-edit {
+    margin-right: 6px;
+    color: var(--color-link, #00aad2);
+}
+table.pnr-queue td.pnr-actions a.pnr-edit:hover {
+    text-decoration: underline;
+}
+.pnr-empty {
+    padding: 10px 2px;
+    opacity: 0.7;
+}
