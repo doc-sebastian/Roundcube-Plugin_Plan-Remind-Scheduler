@@ -65,6 +65,13 @@ $labels['edit']               = 'Bearbeiten';
 // Einstellungen
 $labels['reminder_default_self'] = 'Wiedervorlagen mit meiner eigenen Adresse vorbelegen';
 
+// Optionaler IMAP-Ordner für geplante Mails & Wiedervorlagen
+$labels['scheduled_mbox']         = 'Ordner für geplante Nachrichten & Wiedervorlagen';
+$labels['scheduled_mbox_desc']    = 'Wenn Sie hier einen Ordner angeben, werden geplante Mails und Wiedervorlagen zusätzlich als physische Entwürfe in diesem IMAP-Ordner abgelegt. Sie können diese dann wie normale Entwürfe in Roundcube öffnen oder mit einem externen E-Mail-Programm bearbeiten. Die Synchronisation mit der internen Datenbank erfolgt automatisch.';
+$labels['scheduled_mbox_create'] = 'Ordner automatisch anlegen, falls nicht vorhanden';
+$labels['scheduled_mbox_none']   = '– Kein (nur Datenbank) –';
+$labels['scheduled_mbox_folder'] = 'Geplante Nachrichten';
+
 // Meldungen
 $messages['scheduled_ok']     = 'Nachricht geplant für $datetime.';
 $messages['reminder_ok']      = 'Wiedervorlage geplant für $datetime.';

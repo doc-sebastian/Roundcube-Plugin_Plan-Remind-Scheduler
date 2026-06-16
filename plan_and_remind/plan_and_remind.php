@@ -9,7 +9,7 @@
  * an existing e-mail.
  *
  * Features
- *  - "Geplantes Senden" button next to the Send button in the composer
+ *  - "Delayed send" button next to the Send button in the composer
  *    (stopwatch icon) to pick an arbitrary delivery date/time.
  *  - Undo-send safety delay: a configurable countdown is shown before a
  *    normal message actually leaves the composer; it can be cancelled.
@@ -71,12 +71,81 @@ class plan_and_remind extends rcube_plugin
                 }
             }
 
+            // When the compose page was opened from the scheduled-messages
+            // folder, expose the origin so JS can inject hidden fields and
+            // clean up the old draft on send/re-schedule.
+            if ($this->rc->action === 'compose' && $this->scheduled_folder() !== '') {
+                $originMbox = rcube_utils::get_input_value('_mbox', rcube_utils::INPUT_GET)
+                           ?: rcube_utils::get_input_value('_mbox', rcube_utils::INPUT_POST);
+                $originUid  = rcube_utils::get_input_value('_uid', rcube_utils::INPUT_GET)
+                           ?: rcube_utils::get_input_value('_uid', rcube_utils::INPUT_POST);
+                if ($originMbox === $this->scheduled_folder() && $originUid) {
+                    $this->rc->output->set_env('pnr_origin_mbox', $originMbox);
+                    $this->rc->output->set_env('pnr_origin_uid', (int) $originUid);
+
+                    // Store origin in session as a backup (form fields may not
+                    // survive all submit cycles in all Roundcube versions).
+                    $_SESSION['pnr_compose_origin'] = [
+                        'mbox'  => $originMbox,
+                        'uid'   => (int) $originUid,
+                        'time'  => time(),
+                    ];
+
+                    // Resolve the DB row so we know which item to cancel on
+                    // send/re-schedule. Expose its id + type to JS.
+                    $item = $this->storage()->get_by_imap($originMbox, (int) $originUid);
+                    if ($item && $item['status'] === 'pending') {
+                        $this->rc->output->set_env('pnr_replaced', (int) $item['id']);
+                    }
+                }
+            }
+
             $this->init_mail();
         }
 
         if ($this->rc->task === 'settings') {
             $this->init_settings();
         }
+    }
+
+    /**
+     * Hook: decorate message-list rows for drafts living in the scheduled-
+     * messages folder so they show a visual indicator next to the subject.
+     */
+    public function on_messages_list($args)
+    {
+        $folder = $this->scheduled_folder();
+        if ($folder === '' || !isset($args['messages']) || !is_array($args['messages'])) {
+            return $args;
+        }
+
+        $mbox = isset($args['folder']) ? $args['folder'] : '';
+        if ($mbox !== $folder) {
+            return $args;
+        }
+
+        // Add a CSS class to scheduled-folder messages so the JS / skin can
+        // style them. The actual "open in compose" happens in JavaScript.
+        foreach ($args['messages'] as $msg) {
+            if (is_object($msg)) {
+                if (!isset($msg->list_flags) || !is_array($msg->list_flags)) {
+                    $msg->list_flags = ['flags' => [], 'classname' => ''];
+                }
+                if (isset($msg->list_flags['classname'])) {
+                    $extra = ' pnr-scheduled-draft';
+                    if (strpos($msg->list_flags['classname'], $extra) === false) {
+                        $msg->list_flags['classname'] .= $extra;
+                    }
+                }
+            }
+        }
+
+        // Bi-directional sync reconciliation: compare the DB's pending items
+        // against the IMAP folder. Any DB row whose IMAP UID is no longer
+        // present in the folder means the user deleted or moved it → cancel.
+        $this->reconcile_scheduled_folder($folder, $args['messages']);
+
+        return $args;
     }
 
     /* --------------------------------------------------------------------- */
@@ -88,6 +157,9 @@ class plan_and_remind extends rcube_plugin
         // Intercept actual SMTP delivery so a scheduled message is queued
         // instead of being sent right away.
         $this->add_hook('message_before_send', [$this, 'on_message_before_send']);
+
+        // Decorate message-list rows in the scheduled-messages folder.
+        $this->add_hook('messages_list', [$this, 'on_messages_list']);
 
         $this->include_script('plan_and_remind.js');
         $this->include_stylesheet($this->local_skin_path() . '/plan_and_remind.css');
@@ -108,11 +180,19 @@ class plan_and_remind extends rcube_plugin
         $this->rc->output->set_env('pnr_undo_delay', (int) $this->pref('pnr_undo_delay', $this->rc->config->get('plan_and_remind_default_delay', 10)));
         $this->rc->output->set_env('pnr_reminder_default_self', (bool) $this->pref('pnr_reminder_default_self', $this->rc->config->get('plan_and_remind_reminder_default_self', true)));
         $this->rc->output->set_env('pnr_identity_email', $this->self_email());
+        // Expose the optional scheduled-messages IMAP folder so JS can detect
+        // it on the message list and on the compose page.
+        $this->rc->output->set_env('pnr_scheduled_mbox', $this->scheduled_folder());
 
         $this->register_action('plugin.pnr_create_reminder', [$this, 'action_create_reminder']);
         $this->register_action('plugin.pnr_cancel', [$this, 'action_cancel']);
         $this->register_action('plugin.pnr_edit', [$this, 'action_edit']);
         $this->register_action('plugin.pnr_delete_draft', [$this, 'action_delete_draft']);
+        $this->register_action('plugin.pnr_list_folders', [$this, 'action_list_folders']);
+
+        // Bi-directional sync: reconciliation endpoint called by JS when the
+        // user views or refreshes the scheduled-messages folder.
+        $this->register_action('plugin.pnr_reconcile', [$this, 'action_reconcile']);
     }
 
     /**
@@ -211,6 +291,9 @@ class plan_and_remind extends rcube_plugin
             // Mark the old task as cancelled (it has been promoted to a draft).
             $this->storage()->cancel($id, $this->rc->user->ID);
 
+            // Remove the old physical scheduled-draft copy if one exists.
+            $this->imap_remove_scheduled_draft($id);
+
             // Tell the browser to open the draft in compose mode.
             // Roundcube uses _uid (not _draft_id) with _mbox to open a
             // message for editing. This is the same mechanism Roundcube
@@ -265,6 +348,30 @@ class plan_and_remind extends rcube_plugin
         $this->rc->output->send();
     }
 
+    /**
+     * AJAX action: return the user's IMAP folder list as JSON so the settings
+     * page can populate a dropdown for choosing the scheduled-messages folder.
+     */
+    public function action_list_folders()
+    {
+        $folders = [];
+        try {
+            $this->rc->storage_init();
+            $imap     = $this->rc->get_storage();
+            $all      = $imap->list_folders_subscribed('', '*');
+            if (is_array($all)) {
+                foreach ($all as $f) {
+                    $folders[] = rcube::Q($f);
+                }
+            }
+        } catch (Throwable $e) {
+            // fall through with empty list
+        }
+
+        $this->rc->output->command('plugin.pnr_folders', $folders);
+        $this->rc->output->send();
+    }
+
     private function init_settings()
     {
         $this->add_hook('preferences_sections_list', [$this, 'prefs_section']);
@@ -276,6 +383,7 @@ class plan_and_remind extends rcube_plugin
 
         $this->register_action('plugin.pnr_cancel', [$this, 'action_cancel']);
         $this->register_action('plugin.pnr_edit', [$this, 'action_edit']);
+        $this->register_action('plugin.pnr_list_folders', [$this, 'action_list_folders']);
     }
 
     /* --------------------------------------------------------------------- */
@@ -288,6 +396,12 @@ class plan_and_remind extends rcube_plugin
      */
     public function on_message_before_send($args)
     {
+        // Detect & resolve a prior scheduled item / draft being re-sent or
+        // re-scheduled from the compose window so it is cleaned up (DB row
+        // cancelled, physical draft deleted) rather than duplicated.
+        // This runs for BOTH normal send and scheduled send.
+        $this->handle_compose_supersede();
+
         $raw = rcube_utils::get_input_value('_pnr_schedule_at', rcube_utils::INPUT_POST);
 
         if ($raw === null || $raw === '') {
@@ -389,6 +503,13 @@ class plan_and_remind extends rcube_plugin
                 $args['error']  = null;
                 $this->rc->output->set_env('pnr_last_scheduled',
                     $this->rc->format_date($ts, $this->rc->config->get('date_long')));
+
+                // Sync the physical IMAP draft copy when the feature is active.
+                if (is_numeric($id) && $id > 0 && $this->scheduled_folder() !== '') {
+                    $this->imap_save_scheduled_draft(
+                        (int) $id, $source, gmdate('Y-m-d H:i:s', $ts), 'scheduled'
+                    );
+                }
             }
         } catch (Throwable $e) {
             // Any unexpected error must not leave the composer stuck on
@@ -497,6 +618,12 @@ class plan_and_remind extends rcube_plugin
                             . '[table: ' . $this->storage()->table_name_full() . ']';
                     } else {
                         $count++;
+                        // Sync the physical IMAP draft copy when the feature is active.
+                        if (is_numeric($id) && $id > 0 && $this->scheduled_folder() !== '') {
+                            $this->imap_save_scheduled_draft(
+                                (int) $id, $source, gmdate('Y-m-d H:i:s', $at), 'reminder'
+                            );
+                        }
                     }
                 } else {
                     $last_err = 'DB insert failed: ' . $this->storage()->get_last_error();
@@ -543,6 +670,8 @@ class plan_and_remind extends rcube_plugin
         $ok = $id && $this->storage()->cancel($id, $this->rc->user->ID);
 
         if ($ok) {
+            // Remove the physical scheduled-draft copy from IMAP as well.
+            $this->imap_remove_scheduled_draft($id);
             $this->rc->output->command('plugin.pnr_cancelled', ['id' => $id]);
             $this->rc->output->command('display_message', $this->gettext('cancelled_ok'), 'confirmation');
         } else {
@@ -585,6 +714,36 @@ class plan_and_remind extends rcube_plugin
                 'code' => 600, 'type' => 'php',
                 'message' => 'plan_and_remind: sent-copy on login failed: ' . $e->getMessage(),
             ], true, false);
+        }
+
+        // Clean up physical scheduled-draft copies that could not be removed by
+        // the cron worker (which has no web IMAP session). This removes the
+        // draft from the scheduled-messages folder after the message was
+        // delivered.
+        try {
+            $cleanup = $this->storage()->get_sent_imap_pending($this->rc->user->ID);
+            if (!empty($cleanup)) {
+                $imap = $this->rc->get_storage();
+                foreach ($cleanup as $row) {
+                    if (!empty($row['imap_uid']) && !empty($row['imap_folder'])) {
+                        $imap->delete_message($row['imap_uid'], $row['imap_folder']);
+                    }
+                    $this->storage()->clear_imap_link($row['id']);
+                }
+            }
+        } catch (Exception $e) {
+            rcube::raise_error([
+                'code' => 600, 'type' => 'php',
+                'message' => 'plan_and_remind: scheduled-draft cleanup on login failed: ' . $e->getMessage(),
+            ], true, false);
+        }
+
+        // Bi-directional sync: cancel any pending DB rows whose physical draft
+        // was deleted or moved out of the scheduled folder (e.g. via another
+        // email client or direct IMAP manipulation) since the last login.
+        $folder = $this->scheduled_folder();
+        if ($folder !== '') {
+            $this->reconcile_scheduled_folder($folder);
         }
 
         return $args;
@@ -654,6 +813,40 @@ class plan_and_remind extends rcube_plugin
             ],
         ];
 
+        // --- Optional IMAP folder for scheduled messages & reminders -------
+        $schedFolder   = $this->scheduled_folder();
+        $autocreate    = (bool) $this->pref('pnr_scheduled_mbox_create', true);
+        $folderInput   = new html_inputfield([
+            'name'        => '_pnr_scheduled_mbox',
+            'id'          => 'pnr_scheduled_mbox',
+            'type'        => 'text',
+            'size'        => 30,
+            'placeholder' => $this->gettext('scheduled_mbox_none'),
+        ]);
+        $autoChk = new html_checkbox([
+            'name' => '_pnr_scheduled_mbox_create', 'id' => 'pnr_scheduled_mbox_create', 'value' => 1,
+        ]);
+
+        $args['blocks']['pnr_folder'] = [
+            'name' => $this->gettext('scheduled_mbox'),
+            'options' => [
+                'desc' => [
+                    'title'   => '&nbsp;',
+                    'content' => html::div(['class' => 'pnr-hint'],
+                        rcube::Q($this->gettext('scheduled_mbox_desc'))),
+                ],
+                'folder' => [
+                    'title'   => html::label('pnr_scheduled_mbox', rcube::Q($this->gettext('scheduled_mbox'))),
+                    'content' => $folderInput->show($schedFolder),
+                ],
+                'autocreate' => [
+                    'title'   => html::label('pnr_scheduled_mbox_create',
+                        rcube::Q($this->gettext('scheduled_mbox_create'))),
+                    'content' => $autoChk->show($autocreate ? 1 : 0),
+                ],
+            ],
+        ];
+
         // --- Pending / scheduled items list -------------------------------
         $args['blocks']['pnr_queue'] = [
             'name'    => $this->gettext('scheduled_list'),
@@ -677,6 +870,11 @@ class plan_and_remind extends rcube_plugin
         $args['prefs']['pnr_undo_enabled']         = (bool) rcube_utils::get_input_value('_pnr_undo_enabled', rcube_utils::INPUT_POST);
         $args['prefs']['pnr_undo_delay']           = $delay;
         $args['prefs']['pnr_reminder_default_self'] = (bool) rcube_utils::get_input_value('_pnr_reminder_default_self', rcube_utils::INPUT_POST);
+
+        // Scheduled-messages IMAP folder (optional).
+        $schedMbox = trim((string) rcube_utils::get_input_value('_pnr_scheduled_mbox', rcube_utils::INPUT_POST));
+        $args['prefs']['pnr_scheduled_mbox']        = $schedMbox;
+        $args['prefs']['pnr_scheduled_mbox_create'] = (bool) rcube_utils::get_input_value('_pnr_scheduled_mbox_create', rcube_utils::INPUT_POST);
 
         return $args;
     }
@@ -1030,6 +1228,413 @@ class plan_and_remind extends rcube_plugin
     {
         $val = $this->rc->config->get($key);
         return $val === null ? $default : $val;
+    }
+
+    /**
+     * Resolve the optional IMAP folder for scheduled messages & reminders.
+     *
+     * The user preference overrides the global config default. Returns the
+     * mailbox name or an empty string when the feature is disabled.
+     *
+     * @return string
+     */
+    private function scheduled_folder()
+    {
+        $folder = $this->pref('pnr_scheduled_mbox',
+            $this->rc->config->get('plan_and_remind_scheduled_mbox', ''));
+        $folder = trim((string) $folder);
+        return $folder;
+    }
+
+    /**
+     * Ensure the scheduled-messages IMAP folder exists. Creates it when the
+     * "auto-create" preference is active (default). Returns true on success
+     * or when the folder is already present.
+     *
+     * @param rcube_imap $imap
+     * @return bool
+     */
+    private function ensure_scheduled_folder($imap)
+    {
+        $folder = $this->scheduled_folder();
+        if ($folder === '') {
+            return false;
+        }
+        if ($imap->folder_exists($folder)) {
+            return true;
+        }
+        $autocreate = (bool) $this->pref('pnr_scheduled_mbox_create',
+            $this->rc->config->get('plan_and_remind_scheduled_mbox_create', true));
+        if (!$autocreate) {
+            return false;
+        }
+        return (bool) $imap->create_folder($folder, true);
+    }
+
+    /**
+     * Write (or replace) the physical draft copy of a queued item in the
+     * scheduled-messages IMAP folder. The message carries custom headers so
+     * the DB row and the draft can be correlated.
+     *
+     * @param int    $id       queue row id
+     * @param string $source   full MIME source (without PNR headers yet)
+     * @param string $send_at  UTC "Y-m-d H:i:s"
+     * @param string $type     "scheduled" or "reminder"
+     * @return bool
+     */
+    private function imap_save_scheduled_draft($id, $source, $send_at, $type)
+    {
+        $folder = $this->scheduled_folder();
+        if ($folder === '') {
+            return false;
+        }
+
+        try {
+            $this->rc->storage_init();
+            $imap = $this->rc->get_storage();
+
+            if (!$this->ensure_scheduled_folder($imap)) {
+                return false;
+            }
+        } catch (Throwable $e) {
+            rcube::write_log('plan_and_remind',
+                sprintf('imap_save_scheduled_draft: folder setup failed for #%d: %s', $id, $e->getMessage()));
+            return false;
+        }
+
+        // Inject / replace the custom identification headers so we can match
+        // the draft back to the DB row later.
+        $source = $this->inject_pnr_headers($source, $id, $send_at, $type);
+
+        // Mark as draft so Roundcube offers the "edit" action.
+        try {
+            $saved = $imap->save_message($folder, $source, '', false, ['DRAFT', 'SEEN']);
+        } catch (Throwable $e) {
+            rcube::write_log('plan_and_remind',
+                sprintf('imap_save_scheduled_draft: save_message failed for #%d: %s', $id, $e->getMessage()));
+            return false;
+        }
+
+        if ($saved === false) {
+            return false;
+        }
+
+        $uid = (int) $saved;
+        if ($uid <= 0) {
+            // Resolve via search fallback (older PHP / driver versions).
+            try {
+                $all  = $imap->search_once($folder, 'ALL', true);
+                $uid  = (int) $imap->id2uid($all->count(), $folder);
+            } catch (Throwable $e) {
+                $uid = 0;
+            }
+        }
+
+        if ($uid > 0) {
+            $this->storage()->set_imap_link($id, $folder, $uid);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Remove an existing scheduled-messages draft from IMAP when the DB
+     * row has been promoted to the standard Drafts folder or otherwise
+     * superseded. Silently ignores errors.
+     *
+     * @param int $id  queue row id
+     */
+    private function imap_remove_scheduled_draft($id)
+    {
+        $item = $this->storage()->get($id, $this->rc->user->ID);
+        if (!$item || empty($item['imap_uid']) || empty($item['imap_folder'])) {
+            return;
+        }
+
+        try {
+            $this->rc->storage_init();
+            $imap = $this->rc->get_storage();
+            $imap->delete_message($item['imap_uid'], $item['imap_folder']);
+        } catch (Throwable $e) {
+            rcube::write_log('plan_and_remind',
+                sprintf('imap_remove_scheduled_draft: failed for #%d: %s', $id, $e->getMessage()));
+        }
+
+        $this->storage()->clear_imap_link($id);
+    }
+
+    /**
+     * Inject X-Plan-And-Remind-Id / -Send-At / -Type headers into a MIME
+     * source string so the physical draft can be correlated with the DB row.
+     * The Date header is also set to the scheduled send time so the folder
+     * listing sorts chronologically.
+     *
+     * @param string $source
+     * @param int    $id
+     * @param string $send_at  UTC "Y-m-d H:i:s"
+     * @param string $type
+     * @return string
+     */
+    private function inject_pnr_headers($source, $id, $send_at, $type)
+    {
+        $eol = strpos($source, "\r\n") !== false ? "\r\n" : "\n";
+        $sep = $eol . $eol;
+        $pos = strpos($source, $sep);
+
+        if ($pos === false) {
+            $head = '';
+            $body = $source;
+        } else {
+            $head = substr($source, 0, $pos);
+            $body = substr($source, $pos);
+        }
+
+        // Remove any existing PNR custom headers (e.g. from a prior version).
+        $head = preg_replace('/^X-Plan-And-Remind-(Id|Send-At|Type):.*(\r?\n[ \t].*)*\r?\n?/mi', '', $head);
+        $head = rtrim($head, "\r\n");
+
+        // Remove the existing Date header and set it to the scheduled time so
+        // the message sorts correctly in the folder.
+        $ts = strtotime($send_at . ' UTC');
+        $dateStr = $ts ? date('r', $ts) : date('r');
+        $head = preg_replace('/^Date:.*(\r?\n[ \t].*)*\r?\n?/mi', '', $head);
+        $head = rtrim($head, "\r\n");
+
+        $injected = 'Date: ' . $dateStr . $eol
+            . 'X-Plan-And-Remind-Id: ' . (int) $id . $eol
+            . 'X-Plan-And-Remind-Send-At: ' . $send_at . $eol
+            . 'X-Plan-And-Remind-Type: ' . $type . $eol;
+
+        return $injected . $head . $body;
+    }
+
+    /**
+     * Given an existing DB item, refresh the corresponding physical draft.
+     * Removes the old draft (if any) and saves a new one.
+     *
+     * @param array $item
+     */
+    private function imap_refresh_scheduled_draft(array $item)
+    {
+        $folder = $this->scheduled_folder();
+        if ($folder === '') {
+            return;
+        }
+
+        // Remove old draft if linked.
+        if (!empty($item['imap_uid']) && !empty($item['imap_folder'])) {
+            try {
+                $this->rc->storage_init();
+                $imap = $this->rc->get_storage();
+                $imap->delete_message($item['imap_uid'], $item['imap_folder']);
+            } catch (Throwable $e) {
+                // Non-fatal; we'll create a fresh one below.
+            }
+            $this->storage()->clear_imap_link($item['id']);
+        }
+
+        $this->imap_save_scheduled_draft(
+            $item['id'],
+            $item['mime_message'],
+            $item['send_at'],
+            $item['type']
+        );
+    }
+
+    /**
+     * Bi-directional sync: compare pending DB rows that have IMAP links with
+     * the actual messages present in the scheduled-messages folder. Any DB row
+     * whose IMAP UID is not found in the folder is cancelled (the user deleted
+     * or moved the physical draft).
+     *
+     * @param string       $folder   scheduled-folder name
+     * @param array|null   $messages pre-fetched message list (from messages_list
+     *                               hook), or null to fetch fresh
+     */
+    private function reconcile_scheduled_folder($folder, $messages = null)
+    {
+        if ($folder === '' || $folder === null) {
+            return;
+        }
+
+        $rows = $this->storage()->get_pending_with_imap($this->rc->user->ID, $folder);
+        if (empty($rows)) {
+            return;
+        }
+
+        // Build a set of UIDs that currently exist in the folder.
+        $existingUids = [];
+        if ($messages && is_array($messages)) {
+            foreach ($messages as $msg) {
+                if (is_object($msg) && isset($msg->uid)) {
+                    $existingUids[(int) $msg->uid] = true;
+                }
+            }
+        }
+
+        // If we don't have a pre-fetched list (e.g. from the reconcile action),
+        // query the IMAP folder to get the current UIDs.
+        if (empty($existingUids)) {
+            try {
+                $this->rc->storage_init();
+                $imap   = $this->rc->get_storage();
+                $index  = $imap->search_once($folder, 'ALL', true);
+                $msgs   = $index->get();
+                if (is_array($msgs)) {
+                    foreach ($msgs as $uid) {
+                        $existingUids[(int) $uid] = true;
+                    }
+                }
+            } catch (Throwable $e) {
+                rcube::write_log('plan_and_remind',
+                    'reconcile: IMAP search failed for folder "' . $folder . '": ' . $e->getMessage());
+                return;
+            }
+        }
+
+        // Cancel DB rows whose IMAP UID is no longer in the folder.
+        foreach ($rows as $row) {
+            $uid = (int) $row['imap_uid'];
+            if ($uid > 0 && !isset($existingUids[$uid])) {
+                $this->storage()->cancel((int) $row['id'], $this->rc->user->ID);
+                $this->storage()->clear_imap_link((int) $row['id']);
+                rcube::write_log('plan_and_remind', sprintf(
+                    'reconcile: cancelled #%d (imap uid %d no longer in "%s")',
+                    $row['id'], $uid, $folder
+                ));
+            }
+        }
+    }
+
+    /**
+     * AJAX action: trigger bi-directional sync reconciliation for the
+     * scheduled-messages folder. Called by JS after the folder listing
+     * refreshes or after a delete operation.
+     */
+    public function action_reconcile()
+    {
+        $folder = $this->scheduled_folder();
+        if ($folder !== '') {
+            $this->reconcile_scheduled_folder($folder, null);
+        }
+        $this->rc->output->command('plugin.pnr_reconciled', []);
+        $this->rc->output->send();
+    }
+
+    /**
+     * Detect when the current compose session originated from a draft inside
+     * the scheduled-messages IMAP folder and the user is re-scheduling it.
+     * Returns [$dbId, $uid, $folder] or false.
+     *
+     * @return array|false
+     */
+    private function detect_scheduled_folder_reschedule()
+    {
+        $folder = $this->scheduled_folder();
+        if ($folder === '') {
+            return false;
+        }
+
+        // JS injects hidden form fields so the origin survives autosaves /
+        // re-POSTs where _mbox/_uid are stripped by Roundcube.
+        $mbox = rcube_utils::get_input_value('_pnr_origin_mbox', rcube_utils::INPUT_POST)
+             ?: rcube_utils::get_input_value('_mbox', rcube_utils::INPUT_GET);
+        $uid  = rcube_utils::get_input_value('_pnr_origin_uid', rcube_utils::INPUT_POST)
+             ?: rcube_utils::get_input_value('_uid', rcube_utils::INPUT_GET);
+
+        if (!$mbox || !$uid) {
+            return false;
+        }
+
+        if ($mbox !== $folder) {
+            return false;
+        }
+
+        // Find matching DB row.
+        $item = $this->storage()->get_by_imap($folder, (int) $uid);
+        if (!$item) {
+            return false;
+        }
+
+        return [(int) $item['id'], (int) $uid, $folder];
+    }
+
+    /**
+     * Detect and resolve a prior scheduled item that is being superseded
+     * from the compose window — i.e. the user opened an existing scheduled
+     * draft (either via the Settings list "Edit" button or directly from the
+     * scheduled-messages IMAP folder) and is now sending or re-scheduling it.
+     *
+     * This is called from on_message_before_send (POST) so it runs both for
+     * normal send and scheduled send. It reads hidden JS-injected fields
+     * (_pnr_origin_mbox / _pnr_origin_uid) that persist the origin across
+     * autosave/sending cycles, finds the matching DB row, cancels it, and
+     * queues the physical draft deletion for JS cleanReplacedDraft.
+     *
+     * @return void
+     */
+    private function handle_compose_supersede()
+    {
+        // Only relevant on actual send/schedule POST.
+        if ($this->rc->task !== 'mail') {
+            return;
+        }
+
+        $originMbox = rcube_utils::get_input_value('_pnr_origin_mbox', rcube_utils::INPUT_POST);
+        $originUid  = (int) rcube_utils::get_input_value('_pnr_origin_uid', rcube_utils::INPUT_POST);
+        $replacedId = (int) rcube_utils::get_input_value('_pnr_replaced', rcube_utils::INPUT_POST);
+
+        // Session fallback: if the hidden form fields weren't submitted
+        // (some Roundcube versions strip unknown fields, or the compose
+        // originated from a different tab), check the session-stored origin.
+        if ((!$originMbox || !$originUid) && isset($_SESSION['pnr_compose_origin'])) {
+            $sess = $_SESSION['pnr_compose_origin'];
+            // Only use session origin if it's recent (within 24h).
+            if (isset($sess['time']) && (time() - $sess['time']) < 86400) {
+                if (!$originMbox && !empty($sess['mbox'])) {
+                    $originMbox = $sess['mbox'];
+                }
+                if (!$originUid && !empty($sess['uid'])) {
+                    $originUid = (int) $sess['uid'];
+                }
+            }
+        }
+
+        $schedFolder = $this->scheduled_folder();
+
+        // Scenario A: direct-from-scheduled-folder edit.
+        if ($originMbox && $originUid && $schedFolder !== '' && $originMbox === $schedFolder) {
+            $item = $this->storage()->get_by_imap($originMbox, $originUid, $this->rc->user->ID);
+            if ($item && $item['status'] === 'pending') {
+                $this->storage()->cancel($item['id'], $this->rc->user->ID);
+                $this->storage()->clear_imap_link($item['id']);
+
+                // Delete the old physical draft directly via PHP — don't rely
+                // solely on JS cleanReplacedDraft which may fail silently.
+                try {
+                    $this->rc->storage_init();
+                    $imap = $this->rc->get_storage();
+                    $imap->delete_message($originUid, $originMbox);
+                } catch (Throwable $e) {
+                    rcube::write_log('plan_and_remind',
+                        sprintf('handle_compose_supersede: old draft delete failed for uid %d: %s',
+                            $originUid, $e->getMessage()));
+                }
+
+                // Also tell JS to clean up (belt + suspenders).
+                $this->rc->output->set_env('pnr_replaced_folder', $originMbox);
+                $this->rc->output->set_env('pnr_replaced_folder_uid', $originUid);
+                $this->rc->output->set_env('pnr_replaced', (int) $item['id']);
+            }
+
+            // Clear the session origin — it's been consumed.
+            unset($_SESSION['pnr_compose_origin']);
+        } elseif ($replacedId > 0) {
+            // Scenario B: Settings-list "Edit". action_edit already cancelled
+            // the old DB row; the old physical scheduled-folder draft was
+            // already removed there. Nothing more to do here.
+        }
     }
 
     private function self_email()

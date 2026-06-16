@@ -64,3 +64,22 @@ $config['plan_and_remind_store_credentials'] = true;
 $config['plan_and_remind_smtp_host'] = null;   // e.g. 'tls://mail.example.com:587' or 'localhost:25'
 $config['plan_and_remind_smtp_user'] = null;
 $config['plan_and_remind_smtp_pass'] = null;
+
+/* ----------------------------------------------------------------------- *
+ * IMAP folder for scheduled messages & reminders (optional)               *
+ * ----------------------------------------------------------------------- *
+ *
+ * When set to a mailbox name (e.g. "scheduled"), queued items are also
+ * stored physically as \Draft-flagged IMAP messages inside that folder, in
+ * addition to the database table. Users see them directly in the Roundcube
+ * folder list and can edit them with the standard compose-from-draft
+ * mechanism. External IMAP clients can also view/edit these drafts.
+ *
+ * The folder is auto-created if it does not exist. Messages carry a custom
+ * header "X-Plan-And-Remind-Id" and "X-Plan-And-Remind-Send-At" so the cron
+ * worker and the plugin can keep the DB row and the IMAP copy in sync.
+ *
+ * Set to an empty string to disable.
+ */
+$config['plan_and_remind_scheduled_mbox'] = '';
+
