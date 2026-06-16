@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS plan_and_remind (
   subject           VARCHAR(512) DEFAULT NULL,
   store_target      VARCHAR(255) DEFAULT NULL,
   delivery          TEXT         DEFAULT NULL,
+  imap_folder       VARCHAR(255) DEFAULT NULL,
+  imap_uid          INTEGER      DEFAULT NULL,
   mime_message      TEXT         NOT NULL,
   sent_copy_pending SMALLINT     NOT NULL DEFAULT 0,
   error_message     TEXT         DEFAULT NULL,
@@ -25,3 +27,4 @@ CREATE TABLE IF NOT EXISTS plan_and_remind (
 CREATE INDEX ix_pnr_user ON plan_and_remind (user_id);
 CREATE INDEX ix_pnr_due  ON plan_and_remind (status, send_at);
 CREATE INDEX ix_pnr_copy ON plan_and_remind (user_id, sent_copy_pending);
+CREATE INDEX ix_pnr_imap ON plan_and_remind (imap_folder, imap_uid);

@@ -98,6 +98,14 @@ foreach ($due as $item) {
         }
 
         $storage->mark_sent($item['id'], $keep_copy);
+
+        // Remove the physical scheduled-folder draft if one exists. The cron
+        // worker cannot use the web session's IMAP connection, so we try with
+        // the stored credentials and silently fall back to login_after cleanup.
+        if (!empty($item['imap_uid']) && !empty($item['imap_folder'])) {
+            pnr_remove_scheduled_draft($rcmail, $item);
+        }
+
         $sent++;
     } else {
         $attempts = (int) $item['attempts'] + 1;
@@ -275,6 +283,82 @@ function pnr_refresh_date_header($source)
 }
 
 /**
+ * Build and open a standalone IMAP connection from the delivery credentials
+ * stored alongside a queued item.  Used by the cron worker which has no web
+ * session of its own.  Returns an open rcube_imap instance or null.
+ *
+ * @param rcmail $rcmail
+ * @param array  $item
+ * @return rcube_imap|null
+ */
+function pnr_imap_connect($rcmail, $item)
+{
+    $delivery = $item['delivery'] ? json_decode($item['delivery'], true) : null;
+    if (empty($delivery) || empty($delivery['imap_host']) || empty($delivery['imap_user'])) {
+        return null;
+    }
+
+    $imapHost = $delivery['imap_host'];
+    $imapPort = isset($delivery['imap_port']) ? $delivery['imap_port'] : 143;
+    $imapSsl  = isset($delivery['imap_ssl']) ? $delivery['imap_ssl'] : null;
+    $imapUser = $delivery['imap_user'];
+    $imapPass = isset($delivery['imap_pass']) ? $rcmail->decrypt($delivery['imap_pass']) : '';
+
+    if ($imapPass === '') {
+        return null;
+    }
+
+    // Build the IMAP connection URI including the scheme (ssl/tls) so that
+    // rcube_imap parses it correctly.
+    $scheme = '';
+    if ($imapSsl === 'ssl' || $imapSsl === 'tls') {
+        $scheme = $imapSsl . '://';
+    } elseif ($imapSsl && $imapPort == 993) {
+        $scheme = 'ssl://';
+    }
+
+    $connectUri = $scheme . $imapHost . ':' . $imapPort;
+
+    require_once INSTALL_PATH . 'program/lib/Roundcube/rcube_imap.php';
+
+    // Configure the storage layer so rcube_imap's constructor picks up the
+    // correct host/port/ssl settings. The modern signature accepts a URI in
+    // imap_host containing scheme://host:port; older versions use separate
+    // imap_host + default_port + imap_conn_type keys.
+    $rcmail->config->set('imap_host', $connectUri);
+    $rcmail->config->set('default_port', $imapPort);
+    $rcmail->config->set('imap_conn_type', $imapSsl ?: null);
+    $rcmail->config->set('imap_user', $imapUser);
+    $rcmail->config->set('imap_pass', $imapPass);
+
+    $imap = new rcube_imap();
+
+    // The connect() signature differs across Roundcube versions. We try the
+    // main path first (host, port, ssl, user, pass) and fall back to a
+    // config-driven approach if that fails.
+    try {
+        $connected = $imap->connect($imapHost, (int) $imapPort, $imapSsl ?: null, $imapUser, $imapPass);
+    } catch (Throwable $e) {
+        $connected = false;
+    }
+
+    if (!$connected) {
+        // Fallback: construct URI as first arg (e.g. ssl://host:993).
+        try {
+            $connected = $imap->connect($connectUri, null, null, $imapUser, $imapPass);
+        } catch (Throwable $e) {
+            $connected = false;
+        }
+    }
+
+    if (!$connected) {
+        return null;
+    }
+
+    return $imap;
+}
+
+/**
  * Save a copy of the delivered message to the user's Sent folder via IMAP.
  *
  * The cron worker has no web session, so we build a standalone IMAP connection
@@ -286,80 +370,11 @@ function pnr_refresh_date_header($source)
  */
 function pnr_save_sent_copy($rcmail, $item)
 {
-    $delivery = $item['delivery'] ? json_decode($item['delivery'], true) : null;
-    if (empty($delivery) || empty($delivery['imap_host']) || empty($delivery['imap_user'])) {
-        return false;
-    }
-
-    $imapHost = $delivery['imap_host'];
-    $imapPort = isset($delivery['imap_port']) ? $delivery['imap_port'] : 143;
-    $imapSsl  = isset($delivery['imap_ssl']) ? $delivery['imap_ssl'] : null;
-    $imapUser = $delivery['imap_user'];
-    $imapPass = isset($delivery['imap_pass']) ? $rcmail->decrypt($delivery['imap_pass']) : '';
-
-    if ($imapPass === '') {
-        return false;
-    }
-
-    // Build the IMAP connection URI.
-    $scheme = '';
-    if ($imapSsl === 'ssl' || $imapSsl === 'tls') {
-        $scheme = $imapSsl . '://';
-    } elseif ($imapSsl && $imapPort == 993) {
-        $scheme = 'ssl://';
-    }
-
-    $connectUri = $scheme . $imapHost . ':' . $imapPort;
-
     try {
-        require_once INSTALL_PATH . 'program/lib/Roundcube/rcube_imap.php';
-
-        // Set up the storage config so rcube_imap can connect.
-        $rcmail->config->set('imap_conn_type', $imapSsl ?: null);
-
-        $opts = [
-            'host'     => $connectUri,
-            'user'     => $imapUser,
-            'pass'     => $imapPass,
-            'auth_type'=> null,
-        ];
-
-        if (method_exists($rcmail, 'storage_init')) {
-            $rcmail->config->set('default_port', $imapPort);
-        }
-
-        $imap = new rcube_imap();
-
-        // Connect to the IMAP server.
-        $connected = $imap->connect(
-            $imapHost,
-            (string) $imapPort,
-            $imapSsl ?: null,
-            $imapUser,
-            $imapPass
-        );
-
-        if (!$connected) {
-            // Try different connect signature for newer Roundcube versions.
-            $rcmail->config->set('imap_host', $connectUri);
-            $rcmail->config->set('imap_user', $imapUser);
-            $rcmail->config->set('imap_pass', $imapPass);
-
-            $imap = new rcube_imap();
-            $connected = $imap->connect(
-                $connectUri,
-                null,
-                $imapUser,
-                $imapPass,
-                $imapPort,
-                $imapSsl
-            );
-        }
-
-        if (!$connected) {
+        $imap = pnr_imap_connect($rcmail, $item);
+        if (!$imap) {
             rcube::write_log('plan_and_remind',
-                sprintf('sent-copy IMAP connect failed for #%d (host=%s, user=%s)',
-                    $item['id'], $connectUri, $imapUser));
+                sprintf('sent-copy IMAP connect failed for #%d', $item['id']));
             return false;
         }
 
@@ -370,7 +385,6 @@ function pnr_save_sent_copy($rcmail, $item)
 
         // Make sure the Sent folder exists.
         if (!$imap->folder_exists($folder)) {
-            $rcmail->config->set('sent_mbox', $folder);
             $imap->create_folder($folder, true);
         }
 
@@ -389,5 +403,40 @@ function pnr_save_sent_copy($rcmail, $item)
         rcube::write_log('plan_and_remind',
             sprintf('sent-copy exception for #%d: %s', $item['id'], $e->getMessage()));
         return false;
+    }
+}
+
+/**
+ * Remove the physical draft that was stored alongside a queued item in the
+ * user's scheduled-messages IMAP folder.  The cron worker has no web session,
+ * so we connect using the credentials stored alongside the queue row (the same
+ * delivery blob used by pnr_save_sent_copy).  When connection is not possible
+ * the draft is left in place and cleaned up by the login_after hook.
+ *
+ * @param rcmail $rcmail
+ * @param array  $item
+ */
+function pnr_remove_scheduled_draft($rcmail, $item)
+{
+    $folder = isset($item['imap_folder']) ? $item['imap_folder'] : '';
+    $uid    = isset($item['imap_uid']) ? (int) $item['imap_uid'] : 0;
+    if (!$folder || !$uid) {
+        return;
+    }
+
+    try {
+        $imap = pnr_imap_connect($rcmail, $item);
+        if (!$imap) {
+            // Clean-up will be retried by the login_after hook.
+            return;
+        }
+
+        // Select the folder first so delete_message operates correctly.
+        $imap->set_folder($folder);
+        $imap->delete_message($uid, $folder);
+        $imap->close();
+    } catch (Exception $e) {
+        rcube::write_log('plan_and_remind',
+            sprintf('scheduled-draft cleanup exception for #%d: %s', $item['id'], $e->getMessage()));
     }
 }

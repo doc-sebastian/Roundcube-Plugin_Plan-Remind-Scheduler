@@ -1,11 +1,7 @@
 /**
  * Plan & Remind – client logic
  *
- *  - "Geplantes Senden" button next to Send (compose)
- *  - Undo-send countdown before a normal message leaves the composer
- *  - "Wiedervorlage" reminder dialog (message view + list context menu)
- *  - Cancel pending items from the Settings list
- */
+*/
 
 /* global rcmail, rcube_event */
 
@@ -24,6 +20,21 @@
 
     // Reference to Roundcube's original submit_messageform (set when hooked).
     var nativeSubmitMessageform = null;
+
+    // Global keydown guard: when a UI dialog (.ui-dialog, including our own)
+    // is open, prevent numeric keys 0–5 (and any key with a global handler
+    // registered by other plugins like Thunderbird Labels) from triggering
+    // their command when the keystroke originates inside the dialog.
+    if (!window._pnr_dialog_keyguard) {
+        window._pnr_dialog_keyguard = true;
+        document.addEventListener('keydown', function (e) {
+            // Only act when a jQuery UI dialog is currently open.
+            if (!document.querySelector('.ui-dialog:visible')) { return; }
+            // Allow normal text entry in form fields, just stop propagation
+            // and default behaviour so global hotkey handlers never fire.
+            e.stopPropagation();
+        }, true); // capture phase → runs before any plugin handlers
+    }
 
     /* ----------------------------------------------------------------- */
     /*  Helpers                                                          */
@@ -193,6 +204,8 @@
 
     // Remove any stale schedule markers from a previous (aborted) attempt and
     // restore the Sent-copy target so a normal send behaves as expected.
+    // Note: _pnr_origin_* fields must NOT be cleared — they identify the
+    // scheduled draft being edited and are needed on send/re-schedule.
     function clearScheduleFields() {
         var form = rcmail.gui_objects.messageform;
         if (!form) { return; }
@@ -204,6 +217,20 @@
             st.value = stash.value;
         }
         if (stash) { stash.value = ''; }
+    }
+
+    // Inject hidden fields that carry the composed-message origin across
+    // Roundcube's internal autosave / submit cycles. The PHP hook reads these
+    // to detect and cancel a prior scheduled item being superseded.
+    function ensureOriginFields() {
+        var form = rcmail.gui_objects.messageform;
+        if (!form) { return; }
+        if (rcmail.env.pnr_origin_mbox) {
+            ensureHidden('_pnr_origin_mbox', rcmail.env.pnr_origin_mbox);
+        }
+        if (rcmail.env.pnr_origin_uid) {
+            ensureHidden('_pnr_origin_uid', rcmail.env.pnr_origin_uid);
+        }
     }
 
     // Wrap submit_messageform so the undo countdown runs *before* Roundcube
@@ -221,6 +248,11 @@
             pnr.pending_schedule = false;
 
             if (!scheduling) { clearScheduleFields(); }
+
+            // Always carry the origin fields on every submit so the PHP hook
+            // can cancel the old scheduled item regardless of whether the
+            // new action is send (no countdown) or re-schedule.
+            ensureOriginFields();
 
             // Scheduled send, drafts, autosave or disabled undo → send straight away.
             if (scheduling || draft || saveonly || !rcmail.env.pnr_undo_enabled) {
@@ -325,13 +357,19 @@
                         if (st) { ensureHidden('_pnr_store_target', st.value); st.value = ''; }
                     }
 
-                    pnr.pending_schedule = true; // consumed if routed through wrapper
+                    pnr.pending_schedule = true; // consumed by wrapper to skip undo
+
+                    // MUST inject origin fields here too, because the wrapper
+                    // might not run if send goes through the native path.
+                    ensureOriginFields();
 
                     $(this).dialog('close');
 
-                    // Trigger the real send. Prefer the captured native function so
-                    // we don't depend on the 'send' command being enabled.
-                    var fn = nativeSubmitMessageform || rcmail.submit_messageform;
+                    // Route through our wrapper (rcmail.submit_messageform)
+                    // so ensureOriginFields runs and pnr.pending_schedule is
+                    // consumed correctly.  Fallback to nativeSubmitMessageform
+                    // only if the wrapper wasn't registered.
+                    var fn = rcmail.submit_messageform || nativeSubmitMessageform;
                     try {
                         fn.call(rcmail);
                     } catch (e) {
@@ -384,25 +422,43 @@
         };
     }
 
-    // Delete the intermediate draft that was created for editing a queued item.
+    // Delete the intermediate draft(s) that were created for editing a queued
+    // item. Handles two kinds:
+    //  - Temporary Drafts-folder draft created by action_edit (settings list).
+    //  - Original scheduled-folder draft when edited directly from the folder.
     function cleanReplacedDraft() {
         if (!rcmail.env.pnr_replaced) { return; }
-        // Try multiple sources for the draft UID.
-        var draftUid = rcmail.env.pnr_draft_uid || rcmail.env.draft_id || rcmail.env._draft_id || rcmail.env.uid || '';
-        // Fallback: try to get it from the URL parameter.
+
+        // 1. Remove the temporary Drafts-folder copy (settings-list edit path).
+        var draftUid = rcmail.env.pnr_draft_uid || rcmail.env.draft_id
+                     || rcmail.env._draft_id || rcmail.env.uid || '';
         if (!draftUid) {
             var m = window.location.search.match(/[?&]_(?:draft_id|uid)=(\d+)/);
             if (m) { draftUid = m[1]; }
         }
-        var mbox = rcmail.env.mailbox || rcmail.env.cur_folder || rcmail.env.drafts_mbox || '';
-        if (!draftUid || !mbox) { return; }
-        // Use our own delete action to remove the old draft.
-        try {
-            rcmail.http_post('plugin.pnr_delete_draft', {
-                _uid: draftUid,
-                _mbox: mbox
-            });
-        } catch (e) {}
+        var draftsMbox = rcmail.env.drafts_mailbox || rcmail.env.drafts_mbox
+                       || rcmail.env.mailbox || rcmail.env.cur_folder || '';
+        if (draftUid && draftsMbox) {
+            try {
+                rcmail.http_post('plugin.pnr_delete_draft', {
+                    _uid: draftUid,
+                    _mbox: draftsMbox
+                });
+            } catch (e) {}
+        }
+
+        // 2. Remove the original scheduled-folder draft (direct-from-folder
+        //    edit path), if env was populated by the PHP hook.
+        var replacedFolder = rcmail.env.pnr_replaced_folder || '';
+        var replacedUid    = rcmail.env.pnr_replaced_folder_uid || '';
+        if (replacedFolder && replacedUid) {
+            try {
+                rcmail.http_post('plugin.pnr_delete_draft', {
+                    _uid: replacedUid,
+                    _mbox: replacedFolder
+                });
+            } catch (e) {}
+        }
     }
 
     /* ----------------------------------------------------------------- */
@@ -505,6 +561,190 @@
     }
 
     /* ----------------------------------------------------------------- */
+    /*  Scheduled-messages IMAP folder support                           */
+    /* ----------------------------------------------------------------- */
+
+    // Name of the optional scheduled-messages folder (from server env, may be empty).
+    function scheduledFolder() {
+        return rcmail.env.pnr_scheduled_mbox || '';
+    }
+
+    // Is the user currently viewing the scheduled-messages folder?
+    function inScheduledFolder() {
+        if (!scheduledFolder()) { return false; }
+        var mbox = rcmail.env.mailbox || rcmail.env.cur_folder || '';
+        return mbox === scheduledFolder();
+    }
+
+    // Intercept message-list row double-click in the scheduled folder to open
+    // the draft in compose mode instead of the read-only preview.
+    function hookScheduledFolderOpen() {
+        if (!scheduledFolder()) { return; }
+        if (rcmail._pnr_sf) { return; }
+        rcmail._pnr_sf = true;
+
+        // Register the edit command for the scheduled folder.
+        rcmail.register_command('plugin.pnr_edit_scheduled', function (cmd, event) {
+            var uid;
+            if (rcmail.env.uid && rcmail.env.action === 'show') {
+                uid = rcmail.env.uid;
+            } else if (rcmail.message_list) {
+                var sel = rcmail.message_list.get_selection();
+                if (sel && sel.length > 0) { uid = sel[0]; }
+            }
+            if (uid) { openScheduledDraft(uid); }
+            return false;
+        }, true);
+
+        if (rcmail.message_list) {
+            // Double-click opens compose.
+            rcmail.message_list.addEventListener('dblclick', function () {
+                if (!inScheduledFolder()) { return; }
+                var sel = rcmail.message_list.get_selection();
+                if (sel && sel.length > 0) {
+                    openScheduledDraft(sel[0]);
+                }
+            });
+
+            // Track the current folder to enable/disable the edit command.
+            if (inScheduledFolder()) {
+                rcmail.message_list.addEventListener('select', function (list) {
+                    rcmail.enable_command('plugin.pnr_edit_scheduled',
+                        list.get_selection().length > 0);
+                });
+            }
+        }
+
+        // If a message in the scheduled folder is shown standalone, enable the
+        // edit command and expose it in the toolbar.
+        if (inScheduledFolder() && rcmail.env.action === 'show') {
+            rcmail.enable_command('plugin.pnr_edit_scheduled', true);
+            // Add a toolbar button if not present.
+            if (!document.getElementById('pnr-edit-scheduled-btn')) {
+                var tb = document.querySelector('#messagetoolbar, .toolbar');
+                if (tb) {
+                    var btn = document.createElement('a');
+                    btn.id = 'pnr-edit-scheduled-btn';
+                    btn.href = '#';
+                    btn.className = 'button pnr-edit-scheduled';
+                    btn.setAttribute('onclick',
+                        'return rcmail.command(\'plugin.pnr_edit_scheduled\', this, event)');
+                    btn.title = L('edit');
+                    var inner = document.createElement('span');
+                    inner.className = 'inner';
+                    inner.textContent = L('edit');
+                    btn.appendChild(inner);
+                    tb.appendChild(btn);
+                }
+            }
+        }
+
+        // Add a contextual hint banner when viewing the folder listing or
+        // standalone message. Use setTimeout(0) so the DOM has settled after
+        // Roundcube's own initial render, and use a short retry loop for the
+        // standalone message view (load is async).
+        if (inScheduledFolder()) {
+            addScheduledToolbarHint();
+            setTimeout(addScheduledToolbarHint, 200);
+            setTimeout(addScheduledToolbarHint, 800);
+        }
+    }
+
+    // Open a message from the scheduled folder in compose/draft mode, the same
+    // way Roundcube does for the standard Drafts folder.
+    function openScheduledDraft(uid) {
+        if (!uid) { return; }
+        var url = './?_task=mail&_action=compose'
+            + '&_mbox=' + encodeURIComponent(scheduledFolder())
+            + '&_uid=' + encodeURIComponent(uid);
+        window.open(url, '_blank');
+    }
+
+    // Remove the hint banner if it exists (called when navigating away
+    // from the scheduled-messages folder).
+    function removeScheduledToolbarHint() {
+        var hint = document.getElementById('pnr-sf-hint');
+        if (hint && hint.parentNode) {
+            hint.parentNode.removeChild(hint);
+        }
+    }
+
+    // Display a help banner when viewing the scheduled folder listing or a
+    // single scheduled draft.  The banner is inserted directly inside the
+    // message content / message preview container so it acts as a heading
+    // line above the message view, never overlapping the menu bar.
+    function addScheduledToolbarHint() {
+        // Guard against duplicate insertion.
+        if (document.getElementById('pnr-sf-hint')) { return; }
+
+        var hint = document.createElement('div');
+        hint.id = 'pnr-sf-hint';
+        hint.className = 'pnr-sf-hint alert information';
+        hint.innerHTML = '<span class="pnr-sf-icon">&#128197;</span> '
+            + '<span class="pnr-sf-text">' + esc(L('scheduled_mbox_folder')) + '</span>';
+
+        // Try to place the banner inside the main content area.
+        // Targets ordered from most specific to most generic.
+        var targets = [
+            '#mailmessageframe',              // iframe holder for single message view
+            '#messagecontent',                // message view content wrapper
+            '#mailpreviewframe',              // right-pane preview
+            '#messagecontframe',              // older skin message container
+            '#mailview-right .content',       // Elastic: right pane content
+            '#layout-content .content',       // Elastic: main content area
+            '#mailview-right',                // older skins right pane
+            '#mainscreen-content'             // legacy: mainscreen content
+        ];
+        var inserted = false;
+        for (var i = 0; i < targets.length; i++) {
+            var el = document.querySelector(targets[i]);
+            if (el) {
+                // For iframe holders, insert before. For containers, prepend.
+                if (el.tagName === 'IFRAME' || el.id === 'mailmessageframe') {
+                    el.parentNode.insertBefore(hint, el);
+                } else {
+                    el.insertBefore(hint, el.firstChild);
+                }
+                inserted = true;
+                break;
+            }
+        }
+
+        if (!inserted) {
+            // Elastic skin: insert before the watermark / message list header.
+            var content = document.querySelector('#layout-content');
+            if (content) {
+                content.insertBefore(hint, content.firstChild);
+            }
+        }
+    }
+
+    // Handle the folder list response from the server (used by settings).
+    function handleFolders(folders) {
+        if (!folders || !Array.isArray(folders)) { return; }
+        var sel = document.getElementById('pnr_scheduled_mbox');
+        // If there's a datalist element we can populate, do so.
+        var list = document.getElementById('pnr_scheduled_folders');
+        if (!list) {
+            // Create a datalist dynamically.
+            list = document.createElement('datalist');
+            list.id = 'pnr_scheduled_folders';
+            if (sel && sel.parentNode) {
+                sel.parentNode.appendChild(list);
+                sel.setAttribute('list', 'pnr_scheduled_folders');
+            }
+        }
+        if (list) {
+            list.innerHTML = '';
+            folders.forEach(function (f) {
+                var opt = document.createElement('option');
+                opt.value = f;
+                list.appendChild(opt);
+            });
+        }
+    }
+
+    /* ----------------------------------------------------------------- */
     /*  Wire-up                                                          */
     /* ----------------------------------------------------------------- */
 
@@ -512,6 +752,21 @@
         // --- Mail task ---
         if (rcmail.env.task === 'mail') {
             rcmail.register_command('plugin.pnr_reminder', openReminderDialog, false);
+
+            // Scheduled-folder behaviours.
+            hookScheduledFolderOpen();
+            rcmail.addEventListener('plugin.pnr_folders', handleFolders);
+
+            // Re-evaluate the banner when the user navigates between folders.
+            rcmail.addEventListener('listupdate', function () {
+                removeScheduledToolbarHint();
+                if (inScheduledFolder()) {
+                    addScheduledToolbarHint();
+                    // Trigger server-side reconciliation to sync any deletes
+                    // the user made in the IMAP folder back to the DB.
+                    rcmail.http_post('plugin.pnr_reconcile', {});
+                }
+            });
 
             if (rcmail.env.action === 'compose') {
                 window.pnr_open_schedule = openScheduleDialog;
@@ -542,6 +797,19 @@
                 if (row && row.parentNode) { row.parentNode.removeChild(row); }
             });
             rcmail.addEventListener('plugin.pnr_edit_ready', handleEditReady);
+            rcmail.addEventListener('plugin.pnr_folders', handleFolders);
+
+            // Lazy-load the folder list when the user focuses the field.
+            var sfInput = document.getElementById('pnr_scheduled_mbox');
+            if (sfInput) {
+                var loaded = false;
+                sfInput.addEventListener('focus', function () {
+                    if (!loaded) {
+                        loaded = true;
+                        rcmail.http_post('plugin.pnr_list_folders', {});
+                    }
+                });
+            }
         }
     });
 

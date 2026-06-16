@@ -77,7 +77,8 @@ class plan_and_remind_storage
         $cols = [
             'user_id', 'type', 'status', 'send_at', 'created_at',
             'mail_from', 'recipients', 'subject', 'store_target',
-            'delivery', 'mime_message', 'sent_copy_pending', 'attempts',
+            'delivery', 'imap_folder', 'imap_uid',
+            'mime_message', 'sent_copy_pending', 'attempts',
         ];
 
         $quoted       = [];
@@ -227,6 +228,116 @@ class plan_and_remind_storage
 
         $result = $this->db->query($sql, $params);
         return $this->db->fetch_assoc($result) ?: null;
+    }
+
+    /**
+     * Look up a pending/sent item by its IMAP folder + UID link.
+     *
+     * @param string $folder
+     * @param int    $uid
+     * @param int    $user_id  optional, restrict to a single user
+     * @return array|null
+     */
+    public function get_by_imap($folder, $uid, $user_id = null)
+    {
+        if ($folder === null || $uid === null) {
+            return null;
+        }
+        $sql    = 'SELECT * FROM ' . $this->table
+                . ' WHERE imap_folder = ? AND imap_uid = ?';
+        $params = [(string) $folder, (int) $uid];
+        if ($user_id !== null) {
+            $sql     .= ' AND user_id = ?';
+            $params[] = (int) $user_id;
+        }
+        $sql .= ' ORDER BY id DESC';
+        $result = $this->db->query($sql, $params);
+        return $this->db->fetch_assoc($result) ?: null;
+    }
+
+    /**
+     * Get all pending items that have an IMAP folder/uid link.
+     * Used for bi-directional sync reconciliation.
+     *
+     * @param int         $user_id
+     * @param string|null $folder  restrict to a specific folder
+     * @return array
+     */
+    public function get_pending_with_imap($user_id, $folder = null)
+    {
+        $sql    = 'SELECT id, imap_folder, imap_uid FROM ' . $this->table
+                . ' WHERE user_id = ? AND status = ? AND imap_uid IS NOT NULL AND imap_folder IS NOT NULL';
+        $params = [(int) $user_id, 'pending'];
+        if ($folder !== null) {
+            $sql     .= ' AND imap_folder = ?';
+            $params[] = (string) $folder;
+        }
+        $result = $this->db->query($sql, $params);
+        $items  = [];
+        while ($row = $this->db->fetch_assoc($result)) {
+            $items[] = $row;
+        }
+        return $items;
+    }
+
+    /**
+     * Store or update the IMAP folder/UID pointer for an item so that the DB
+     * row and the physical draft can be correlated.
+     *
+     * @param int    $id
+     * @param string $folder
+     * @param int    $uid
+     */
+    public function set_imap_link($id, $folder, $uid)
+    {
+        $this->db->query(
+            'UPDATE ' . $this->table
+            . ' SET imap_folder = ?, imap_uid = ? WHERE id = ?',
+            $folder, (int) $uid, (int) $id
+        );
+    }
+
+    /**
+     * Clear the IMAP link so orphaned references don't interfere with
+     * subsequent syncs.
+     *
+     * @param int $id
+     */
+    public function clear_imap_link($id)
+    {
+        $this->db->query(
+            'UPDATE ' . $this->table
+            . ' SET imap_folder = NULL, imap_uid = NULL WHERE id = ?',
+            (int) $id
+        );
+    }
+
+    /**
+     * Sent items whose IMAP scheduled-folder draft still needs to be removed.
+     * Used by the login_after hook when the cron couldn't delete the draft.
+     * This is independent of the sent_copy_pending state.
+     *
+     * @param int $user_id
+     * @param int $limit
+     * @return array
+     */
+    public function get_sent_imap_pending($user_id, $limit = 50)
+    {
+        $result = $this->db->limitquery(
+            'SELECT * FROM ' . $this->table
+            . ' WHERE user_id = ? AND status = ? AND imap_uid IS NOT NULL'
+            . ' AND imap_folder IS NOT NULL'
+            . ' ORDER BY sent_at DESC',
+            0, $limit,
+            $user_id, 'sent'
+        );
+
+        $items = [];
+        while ($row = $this->db->fetch_assoc($result)) {
+            $items[] = $row;
+        }
+
+        return $items;
     }
 
     public function mark_sent($id, $keep_sent_copy = true)

@@ -158,3 +158,68 @@ table.pnr-queue td.pnr-actions a.pnr-edit:hover {
     padding: 10px 2px;
     opacity: 0.7;
 }
+
+/* ---- Scheduled-folder hint banner ----------------------------------- */
+.pnr-sf-hint {
+    padding: 8px 14px;
+    margin: 0;
+    background: #d9edf7 !important;
+    border-left: 4px solid #00aad2 !important;
+    color: #31708f !important;
+    font-size: 13px;
+    font-weight: normal;
+    line-height: 1.5;
+    box-sizing: border-box;
+    z-index: 100;
+    display: block !important;
+    width: 100%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+
+    /* Ensure it's above message content but below modals */
+    position: relative;
+}
+
+/* Dark mode / Elastic dark theme: override the colors */
+body.dark-mode .pnr-sf-hint,
+.layout-dark .pnr-sf-hint,
+html.dark .pnr-sf-hint {
+    background: #1a3a4a !important;
+    color: #a8d8e8 !important;
+    border-left-color: #00aad2 !important;
+}
+
+/* Also handle via prefers-color-scheme for OS-level dark mode */
+@media (prefers-color-scheme: dark) {
+    .pnr-sf-hint {
+        background: #1a3a4a !important;
+        color: #a8d8e8 !important;
+    }
+}
+
+.pnr-sf-hint .pnr-sf-icon {
+    margin-right: 6px;
+    font-size: 14px;
+}
+
+.pnr-sf-hint .pnr-sf-text {
+    vertical-align: middle;
+}
+
+/* ---- Settings: folder input field ----------------------------------- */
+#pnr_scheduled_mbox {
+    min-width: 200px;
+}
+
+/* ---- Message-list: rows in the scheduled folder --------------------- */
+.pnr-scheduled-draft,
+tr.pnr-scheduled-draft {
+    /* Subtle highlight to distinguish scheduled drafts from regular mail. */
+    background-color: rgba(0, 170, 210, 0.06) !important;
+}
+
+/* Edit button shown in the toolbar when reading a scheduled draft */
+a.pnr-edit-scheduled.button::before {
+    content: '✎';
+    margin-right: 0.3em;
+    font-size: 1.1em;
+}

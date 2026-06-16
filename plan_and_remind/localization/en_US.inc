@@ -65,6 +65,13 @@ $labels['edit']               = 'Edit';
 // Settings
 $labels['reminder_default_self'] = 'Pre-fill reminders with my own address';
 
+// Optional IMAP folder for scheduled messages & reminders
+$labels['scheduled_mbox']         = 'Folder for scheduled messages & reminders';
+$labels['scheduled_mbox_desc']    = 'If you specify a folder here, scheduled messages and reminders are additionally stored as physical drafts in this IMAP folder. You can open them like normal drafts in Roundcube or edit them with an external email client. Synchronisation with the internal database happens automatically.';
+$labels['scheduled_mbox_create'] = 'Create the folder automatically if it does not exist';
+$labels['scheduled_mbox_none']   = '– None (database only) –';
+$labels['scheduled_mbox_folder'] = 'Scheduled messages';
+
 // Messages
 $messages['scheduled_ok']     = 'Message scheduled for $datetime.';
 $messages['reminder_ok']      = 'Reminder scheduled for $datetime.';
