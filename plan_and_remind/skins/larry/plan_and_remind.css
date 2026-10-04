@@ -11,15 +11,73 @@
 }
 
 /* ---- Compose toolbar: "Planen" button -------------------------------- */
-.pnr-scheduledsend {
-    position: relative;
-    background-image: none !important;  /* kill the opaque raster icon */
-    background-color: transparent !important;
+
+/* ---- "Wiedervorlage" entry in the message options / context menu ---- */
+/* The stock entries draw their icon via the listicons sprite on the
+ * SPAN.icon (padding-left reserves the 24px icon slot; the label text is the
+ * span's content). We cannot use a CSS mask on the span itself because a
+ * mask applies to the whole element INCLUDING its text content (which would
+ * punch the text out). Instead: transparent text (so the sprite slot stays
+ * empty) is not an option either – the label must stay visible. Solution:
+ * keep the span's text, hide the sprite, and draw the stopwatch on a
+ * dedicated ::before pseudo-element absolutely positioned inside the icon
+ * slot – exactly how the settings-section icon below works. */
+ul.toolbarmenu li a span.icon.pnr-reminder {
+    background-image: none;          /* kill the listicons sprite */
+    position: relative;              /* anchor for the ::below ::before */
 }
 
-/* Pressed / active state: the user has opened the schedule dialog. */
-.pnr-scheduledsend.pnr-pressed {
-    background-color: #444444 !important;
+ul.toolbarmenu li a span.icon.pnr-reminder::before {
+    content: "";
+    position: absolute;
+    left: 0;                         /* stock sprite icons start at x=0
+                                        (background-position: 0 -NNNNpx), so
+                                        this lines up exactly with print etc. */
+    top: 50%;
+    width: 17px;
+    height: 17px;
+    margin-top: -9px;
+    background-color: currentColor;  /* tinted like the text → hover/active ok */
+    -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain;
+            mask: var(--pnr-stopwatch) no-repeat center / contain;
+}
+/* NOTE: no opacity rules needed here – Larry dims the whole span.icon
+ * (opacity .2 → .99 on a.active) and the ::before inherits that. */
+
+/* NOTE: no background-color:transparent !important here! It would override
+ * Larry's .toolbar a.button:focus highlight (which has no !important) and
+ * the pressed state below – that's why "Planen" never turned grey like
+ * Senden/Abbrechen/Speichern. The button is a clone of the Send button and
+ * its class "send" is stripped, so the sprite already sits at the empty
+ * position (-100px 0) – nothing to neutralize. */
+.pnr-scheduledsend {
+    position: relative;
+}
+
+/* Highlight states – exact copies of Larry's toolbar button rules
+ * (skins/larry/styles.css):
+ *   .toolbar a.button:focus { color:#fff; background-color:rgba(68,68,68,1);
+ *                            border-radius:3px; }
+ * Specificity note: Larry's base rule .toolbar a.button (0,2,1) sets
+ * background-color:transparent via the background shorthand. A bare
+ * .pnr-scheduledsend.pnr-pressed (0,2,0) would LOSE against that, so we
+ * repeat the .toolbar a.button prefix (0,4,1) to win without !important. */
+.toolbar a.button.pnr-scheduledsend:focus,
+.toolbar a.button.pnr-scheduledsend.pnr-pressed {
+    color: #fff;
+    background-color: rgba(68, 68, 68, 1);
+    border-radius: 3px;
+}
+
+/* The stock toolbar icons come from buttons.png which contains WHITE
+ * SEMI-TRANSPARENT pixels (measured median alpha of the send icon ≈ 0.32–0.5).
+ * Our stopwatch is painted with currentColor at full opacity, so in the
+ * pressed/focused state (color:#fff) it would appear as solid pure white –
+ * much brighter than the neighbours. Knock the ::before down to match the
+ * sprite's translucency. Tune 0.5–0.65 if needed. */
+.toolbar a.button.pnr-scheduledsend:focus::before,
+.toolbar a.button.pnr-scheduledsend.pnr-pressed::before {
+    opacity: 0.55;
 }
 /* Position the icon at the top-centre of the button, matching Larry's other
  * toolbar icons, so it lines up with its neighbours instead of sitting low. */
@@ -32,53 +90,6 @@
     height: 22px;
     margin-left: -11px;
     background-color: currentColor;
-    -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain;
-            mask: var(--pnr-stopwatch) no-repeat center / contain;
-}
-
-/* ---- Reminder entry in pop-up / right-click menus -------------------- */
-.popupmenu a.pnr-reminder,
-#messagecontextmenu a.pnr-reminder,
-.listmenu a.pnr-reminder,
-.messagemenu a.pnr-reminder,
-ul.toolbarmenu li a.pnr-reminder {
-    position: relative;
-    background-image: none !important;
-    color: #fff;
-    margin-left:0px;
-}
-
-.popupmenu a.pnr-reminder {
-    position: relative;
-    background-image: none !important;
-    color: #fff;
-    padding-left: 30px;
-	display: block;
-    unicode-bidi: isolate;
-	color: #fff;
-    white-space: nowrap;
-    min-width: 130px;
-    margin: 0;
-    border-top: 1px solid #5a5a5a;
-    text-decoration: none;
-    min-height: 14px;
-}
-	
-	
-.popupmenu a.pnr-reminder::before,
-#messagecontextmenu a.pnr-reminder::before,
-.listmenu a.pnr-reminder::before,
-.messagemenu a.pnr-reminder::before,
-ul.toolbarmenu li a.pnr-reminder::before {
-    content: "";
-    position: absolute;
-    left: 7px;
-    top: 50%;
-    width: 18px;
-    height: 18px;
-    margin-top: -9px;
-    background-color: currentColor;
-    color: #fff;
     -webkit-mask: var(--pnr-stopwatch) no-repeat center / contain;
             mask: var(--pnr-stopwatch) no-repeat center / contain;
 }
@@ -230,4 +241,47 @@ table.pnr-queue td.pnr-actions a.pnr-edit:hover {
 .pnr-empty {
     padding: 10px 2px;
     color: #888;
+}
+
+/* ---- Scheduled-folder hint banner ----------------------------------- */
+.pnr-sf-hint {
+    padding: 8px 14px;
+    margin: 0;
+    background: #d9edf7 !important;
+    border-left: 4px solid #00aad2 !important;
+    color: #31708f !important;
+    font-size: 13px;
+    font-weight: normal;
+    line-height: 1.5;
+    box-sizing: border-box;
+    z-index: 100;
+    display: block !important;
+    width: 100%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    position: relative;
+}
+.pnr-sf-hint .pnr-sf-icon {
+    margin-right: 6px;
+    font-size: 14px;
+}
+.pnr-sf-hint .pnr-sf-text {
+    vertical-align: middle;
+}
+
+/* ---- Settings: folder input field ----------------------------------- */
+#pnr_scheduled_mbox {
+    min-width: 200px;
+}
+
+/* ---- Message-list: rows in the scheduled folder --------------------- */
+.pnr-scheduled-draft,
+tr.pnr-scheduled-draft {
+    background-color: rgba(0, 170, 210, 0.06) !important;
+}
+
+/* Edit button shown in the toolbar when reading a scheduled draft */
+a.pnr-edit-scheduled.button::before {
+    content: '✎';
+    margin-right: 0.3em;
+    font-size: 1.1em;
 }
