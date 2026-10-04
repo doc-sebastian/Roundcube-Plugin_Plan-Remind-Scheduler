@@ -169,16 +169,25 @@ class plan_and_remind extends rcube_plugin
         // and with the skin's "icon" classes so it inherits the standard
         // toolbarmenu styling (padding, separators, hover, icon slot).
         // The icon itself is drawn by the skin CSS (span.pnr-reminder).
-        $this->api->add_content(html::tag('li', null,
-            $this->api->output->button([
-                'command'    => 'plugin.pnr_reminder',
-                'type'       => 'link',
-                'label'      => 'plan_and_remind.reminder',
-                'title'      => 'plan_and_remind.reminder_desc',
-                'class'      => 'icon pnr-reminder',
-                'classact'   => 'icon pnr-reminder active',
-                'innerclass' => 'icon pnr-reminder',
-            ])), 'messagemenu');
+        //
+        // IMPORTANT: output->button() only exists on rcmail_output_html!
+        // On AJAX requests the output object is rcmail_output_json which has
+        // no button() method → fatal "Call to undefined method" that killed
+        // every keep-alive/list request (mailserver appeared offline).
+        // Guard with the type check, same as rcube_plugin::add_button() and
+        // managesieve::mail_task_handler() do.
+        if ($this->api->output->type == 'html') {
+            $this->api->add_content(html::tag('li', null,
+                $this->api->output->button([
+                    'command'    => 'plugin.pnr_reminder',
+                    'type'       => 'link',
+                    'label'      => 'plan_and_remind.reminder',
+                    'title'      => 'plan_and_remind.reminder_desc',
+                    'class'      => 'icon pnr-reminder',
+                    'classact'   => 'icon pnr-reminder active',
+                    'innerclass' => 'icon pnr-reminder',
+                ])), 'messagemenu');
+        }
 
         // Expose settings to the client.
         $this->rc->output->set_env('pnr_undo_enabled', (bool) $this->pref('pnr_undo_enabled', $this->rc->config->get('plan_and_remind_undo_enabled', true)));
